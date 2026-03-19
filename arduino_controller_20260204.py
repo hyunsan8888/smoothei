@@ -13,7 +13,8 @@ from datetime import datetime
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QPushButton, QLabel, QTextEdit, QGridLayout,
-    QStatusBar, QMessageBox, QComboBox, QStackedWidget
+    QStatusBar, QMessageBox, QComboBox, QStackedWidget, QDialog,
+    QDialogButtonBox
 )
 from PyQt5.QtCore import QTimer, Qt, pyqtSignal, QThread, QPoint
 from PyQt5.QtGui import QFont, QColor, QPalette
@@ -108,6 +109,92 @@ class SerialThread(QThread):
                 self.serial.close()
             except:
                 pass
+
+
+class CleaningConfirmDialog(QDialog):
+    """세척 시작 확인 다이얼로그"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("세척 시작 확인")
+        self.setFixedSize(420, 260)
+        self.setModal(True)
+        self.initUI()
+    
+    def initUI(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(15)
+        layout.setContentsMargins(25, 25, 25, 20)
+
+        # 경고 아이콘 + 제목
+        title_layout = QHBoxLayout()
+        icon_label = QLabel("🧼")
+        icon_label.setStyleSheet("font-size: 36px;")
+        title_label = QLabel("세척 작업을 시작합니다")
+        title_label.setStyleSheet(
+            "font-size: 18px; font-weight: bold; color: #00838F;"
+        )
+        title_layout.addWidget(icon_label)
+        title_layout.addWidget(title_label)
+        title_layout.addStretch()
+        layout.addLayout(title_layout)
+
+        # 구분선
+        line = QLabel()
+        line.setFixedHeight(1)
+        line.setStyleSheet("background-color: #e0e0e0;")
+        layout.addWidget(line)
+
+        # 체크리스트
+        checklist = [
+            "✔  컵이 시스템에서 완전히 제거되었습니까?",
+            "✔  제조 작업이 완전히 종료되었습니까?",
+            "✔  세척수 공급이 준비되었습니까?",
+        ]
+        for text in checklist:
+            lbl = QLabel(text)
+            lbl.setStyleSheet("font-size: 13px; color: #444; padding: 2px 0;")
+            layout.addWidget(lbl)
+
+        layout.addStretch()
+
+        # 버튼
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(12)
+
+        cancel_btn = QPushButton("취소")
+        cancel_btn.setFixedHeight(42)
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 14px;
+                background-color: #9E9E9E;
+                color: white;
+                border-radius: 8px;
+                padding: 0 20px;
+            }
+            QPushButton:hover { background-color: #757575; }
+        """)
+        cancel_btn.clicked.connect(self.reject)
+
+        confirm_btn = QPushButton("세척 시작")
+        confirm_btn.setFixedHeight(42)
+        confirm_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 14px;
+                font-weight: bold;
+                background-color: #00BCD4;
+                color: white;
+                border-radius: 8px;
+                padding: 0 20px;
+            }
+            QPushButton:hover { background-color: #0097A7; }
+        """)
+        confirm_btn.clicked.connect(self.accept)
+
+        btn_layout.addStretch()
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(confirm_btn)
+        layout.addLayout(btn_layout)
 
 
 class CustomerScreen(QWidget):
@@ -230,10 +317,8 @@ class CustomerScreen(QWidget):
     def update_photo_sensor(self, detected):
         """포토센서 상태 업데이트"""
         if detected and not self.photo_detected:
-            # 감지됨 → 바로 버튼 표시
             self.show_buttons()
         elif not detected and self.photo_detected:
-            # 감지 안 됨 → 대기 메시지로 복귀
             self.show_waiting_message()
         
         self.photo_detected = detected
@@ -301,7 +386,7 @@ class AdvancedControlScreen(QWidget):
         control_group = self.create_control_group()
         layout.addWidget(control_group)
         
-        # 세척 제어 (새로 추가)
+        # ── 세척 제어 (독립 실행 지원) ──
         cleaning_group = self.create_cleaning_group()
         layout.addWidget(cleaning_group)
         
@@ -349,26 +434,91 @@ class AdvancedControlScreen(QWidget):
         return group
     
     def create_cleaning_group(self):
-        """세척 제어 그룹"""
+        """
+        세척 제어 그룹 - 독립 실행
+        Arduino 로 'CLEAN' 명령을 직접 전송하므로
+        현재 시스템 상태(state)와 무관하게 언제든 실행 가능합니다.
+        """
         group = QGroupBox("세척 제어")
+        group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #00BCD4;
+                border-radius: 6px;
+                margin-top: 6px;
+                padding-top: 4px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                color: #00838F;
+            }
+        """)
         layout = QVBoxLayout()
-        
-        info_label = QLabel("작업 완료 후 컵을 제거하고\n세척을 시작하세요")
-        info_label.setStyleSheet("color: #666; font-size: 11px;")
+        layout.setSpacing(8)
+
+        # 안내 문구
+        info_label = QLabel(
+            "컵을 제거한 뒤 세척을 시작하세요.\n"
+            "시스템 상태와 무관하게 단독 실행됩니다."
+        )
+        info_label.setStyleSheet("color: #555; font-size: 11px; font-weight: normal;")
         info_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(info_label)
-        
-        self.cleaning_start_btn = QPushButton("세척 시작")
+
+        # 세척 상태 표시 라벨
+        self.cleaning_status_label = QLabel("대기 중")
+        self.cleaning_status_label.setAlignment(Qt.AlignCenter)
+        self.cleaning_status_label.setStyleSheet("""
+            QLabel {
+                font-size: 13px;
+                font-weight: bold;
+                color: #00838F;
+                background-color: #E0F7FA;
+                border-radius: 4px;
+                padding: 4px;
+            }
+        """)
+        layout.addWidget(self.cleaning_status_label)
+
+        # 세척 시작 버튼
+        self.cleaning_start_btn = QPushButton("🧼  세척 시작 (CLEAN)")
         self.cleaning_start_btn.setStyleSheet("""
-            background-color: #00BCD4; 
-            color: white; 
-            font-weight: bold; 
-            padding: 15px;
-            font-size: 14px;
+            QPushButton {
+                background-color: #00BCD4;
+                color: white;
+                font-weight: bold;
+                padding: 15px;
+                font-size: 14px;
+                border-radius: 6px;
+            }
+            QPushButton:hover  { background-color: #0097A7; }
+            QPushButton:pressed { background-color: #00838F; }
+            QPushButton:disabled {
+                background-color: #B2EBF2;
+                color: #80DEEA;
+            }
         """)
         self.cleaning_start_btn.setMinimumHeight(60)
         layout.addWidget(self.cleaning_start_btn)
-        
+
+        # 세척 중지 버튼 (STOP 재사용)
+        self.cleaning_stop_btn = QPushButton("⏹  세척 중지 (STOP)")
+        self.cleaning_stop_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF7043;
+                color: white;
+                font-weight: bold;
+                padding: 10px;
+                font-size: 13px;
+                border-radius: 6px;
+            }
+            QPushButton:hover  { background-color: #E64A19; }
+            QPushButton:pressed { background-color: #BF360C; }
+        """)
+        self.cleaning_stop_btn.setMinimumHeight(44)
+        layout.addWidget(self.cleaning_stop_btn)
+
         group.setLayout(layout)
         return group
     
@@ -464,6 +614,20 @@ class AdvancedControlScreen(QWidget):
         
         return panel
 
+    def set_cleaning_status(self, text, color="#00838F", bg="#E0F7FA"):
+        """세척 상태 라벨 업데이트"""
+        self.cleaning_status_label.setText(text)
+        self.cleaning_status_label.setStyleSheet(f"""
+            QLabel {{
+                font-size: 13px;
+                font-weight: bold;
+                color: {color};
+                background-color: {bg};
+                border-radius: 4px;
+                padding: 4px;
+            }}
+        """)
+
 
 class ArduinoControllerGUI(QMainWindow):
     def __init__(self):
@@ -515,8 +679,9 @@ class ArduinoControllerGUI(QMainWindow):
         adv.home_btn.clicked.connect(lambda: self.send_command("HOME"))
         adv.status_btn.clicked.connect(lambda: self.send_command("STATUS"))
         
-        # 세척 제어
+        # ── 세척 제어 (독립 실행) ──
         adv.cleaning_start_btn.clicked.connect(self.on_cleaning_start)
+        adv.cleaning_stop_btn.clicked.connect(self.on_cleaning_stop)
         
         # 수동 제어
         for btn in adv.manual_buttons:
@@ -531,7 +696,6 @@ class ArduinoControllerGUI(QMainWindow):
         ports = serial.tools.list_ports.comports()
         
         if ports:
-            # 첫 번째 포트로 자동 연결
             port = ports[0].device
             self.add_log(f"자동 연결 시도: {port}")
             self.connect_serial(port)
@@ -571,7 +735,7 @@ class ArduinoControllerGUI(QMainWindow):
     def on_customer_start(self):
         """고객 화면 시작 버튼"""
         self.send_command("START")
-        self.customer_screen.show_waiting_message()  # 버튼 숨기고 대기 메시지
+        self.customer_screen.show_waiting_message()
     
     def on_customer_stop(self):
         """고객 화면 정지 버튼"""
@@ -583,26 +747,113 @@ class ArduinoControllerGUI(QMainWindow):
         )
         if reply == QMessageBox.Yes:
             self.send_command("STOP")
-    
+
+    # ──────────────────────────────────────────────────────────────
+    #  세척 제어 - 독립 실행
+    #  시스템 상태(READY / RUNNING / WAITING …)와 무관하게
+    #  관리자가 언제든 'CLEAN' 명령을 직접 전송할 수 있습니다.
+    #
+    #  세척 시퀀스 (타이머 기반 UI 표시):
+    #    ① CLEAN 명령 전송
+    #    ② DC모터 + 스테퍼 동시 하강 (descend_ms 동안)
+    #    ③ 하강 완료 → 세척 동작 진행 (clean_ms 동안)
+    #    ④ 홈 복귀 (return_ms 동안)
+    #    ⑤ 세척 완료
+    #
+    #  ※ 실제 타이밍은 Arduino 펌웨어의 동작 시간에 맞춰
+    #     DESCEND_MS / CLEAN_MS / RETURN_MS 값을 조정하세요.
+    # ──────────────────────────────────────────────────────────────
+
+    # 세척 단계별 소요 시간 (ms) - Arduino 펌웨어 타이밍에 맞게 조정
+    DESCEND_MS = 3000   # DC모터 + 스테퍼 동시 하강 시간
+    CLEAN_MS   = 8000   # 세척 동작 시간 (밸브/펌프/블렌더 등)
+    RETURN_MS  = 3000   # 홈 복귀 시간
+
     def on_cleaning_start(self):
-        """세척 시작 버튼"""
-        # 세척은 작업 완료 후 컵 제거 상태에서만 가능
-        # Arduino에서 WAITING_FOR_REMOVAL 상태일 때 START 버튼 누르면 세척 시작
-        current_state = self.current_state.get('state', '')
-        
-        if 'CLEANING' in current_state or 'WAITING' in current_state:
-            reply = QMessageBox.question(
-                self, '세척 시작', 
-                '세척을 시작하시겠습니까?\n(컵이 제거되었는지 확인하세요)',
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
-            )
-            if reply == QMessageBox.Yes:
-                self.send_command("START")
-                self.add_log("세척 프로세스 시작")
-        else:
-            QMessageBox.warning(self, '경고', '세척은 작업 완료 후에만 가능합니다.')
-    
+        """
+        세척 시작 - 상태 조건 없이 단독 실행
+        ① 확인 다이얼로그
+        ② CLEAN 명령 전송
+        ③ 타이머로 단계별 UI 상태 표시
+           (하강 중 → 세척 중 → 복귀 중 → 완료)
+        """
+        dialog = CleaningConfirmDialog(self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        adv = self.advanced_screen
+
+        # 버튼 비활성화 (중복 실행 방지)
+        adv.cleaning_start_btn.setEnabled(False)
+
+        # ── 단계 1: DC모터 + 스테퍼 동시 하강 ──────────────────
+        adv.set_cleaning_status(
+            "① DC모터 + 스테퍼 하강 중 ↓",
+            color="#1565C0", bg="#E3F2FD"
+        )
+        self.add_log("▶ 세척 시작 — DC모터 + 스테퍼 동시 하강")
+
+        # Arduino 에 CLEAN 명령 전송 (하강 + 세척 전체 시퀀스 처리)
+        self.send_command("CLEAN")
+
+        # ── 단계 2: 하강 완료 후 세척 중 표시 (타이머) ──────────
+        QTimer.singleShot(self.DESCEND_MS, self._cleaning_step_descend_done)
+
+    def _cleaning_step_descend_done(self):
+        """하강 완료 → 세척 동작 중 UI 표시"""
+        adv = self.advanced_screen
+        # 세척이 이미 중단된 경우 무시
+        if adv.cleaning_start_btn.isEnabled():
+            return
+        adv.set_cleaning_status(
+            "② 세척 동작 진행 중 🔄",
+            color="#E65100", bg="#FFF3E0"
+        )
+        self.add_log("  ↳ 하강 완료 — 세척 동작 진행 중")
+
+        # ── 단계 3: 세척 완료 후 홈 복귀 표시 (타이머) ──────────
+        QTimer.singleShot(self.CLEAN_MS, self._cleaning_step_clean_done)
+
+    def _cleaning_step_clean_done(self):
+        """세척 완료 → 홈 복귀 중 UI 표시"""
+        adv = self.advanced_screen
+        if adv.cleaning_start_btn.isEnabled():
+            return
+        adv.set_cleaning_status(
+            "③ 홈 복귀 중 ↑",
+            color="#6A1B9A", bg="#F3E5F5"
+        )
+        self.add_log("  ↳ 세척 완료 — 홈 복귀 중")
+
+        # ── 단계 4: 전체 완료 (타이머) ───────────────────────────
+        QTimer.singleShot(self.RETURN_MS, self._cleaning_step_finished)
+
+    def _cleaning_step_finished(self):
+        """세척 전체 완료 — 버튼 복원 및 상태 초기화"""
+        adv = self.advanced_screen
+        if adv.cleaning_start_btn.isEnabled():
+            return   # 이미 STOP으로 중단된 경우
+        adv.set_cleaning_status(
+            "✅ 세척 완료",
+            color="#2E7D32", bg="#E8F5E9"
+        )
+        adv.cleaning_start_btn.setEnabled(True)
+        self.add_log("■ 세척 프로세스 완료")
+
+    def on_cleaning_stop(self):
+        """세척 중지 - STOP 명령 전송"""
+        reply = QMessageBox.question(
+            self, '세척 중지',
+            '세척을 중지하고 홈 위치로 복귀합니까?',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            self.send_command("STOP")
+            self.advanced_screen.cleaning_start_btn.setEnabled(True)
+            self.advanced_screen.set_cleaning_status("대기 중")
+            self.add_log("■ 세척 중지 (STOP 명령 전송)")
+
     def send_command(self, command):
         """명령 전송"""
         if not self.is_connected or not self.serial_thread:
@@ -637,15 +888,39 @@ class ArduinoControllerGUI(QMainWindow):
         }
         color = state_colors.get(state, 'black')
         adv.state_label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 14px;")
-        
         adv.step_label.setText(str(status_data.get('step', '-')))
-        
+
+        # ── 세척 상태 자동 반영 (Arduino 상태값 우선) ───────────
+        # Arduino 가 보내는 state 값으로 UI 를 실시간 동기화한다.
+        # 타이머 기반 표시와 충돌하지 않도록 Arduino 값이 있으면
+        # 타이머 표시를 덮어쓴다 (실제 하드웨어 상태가 우선).
+        cleaning_step_map = {
+            'CLEANING_DESCEND':     ("① DC모터 + 스테퍼 하강 중 ↓", "#1565C0", "#E3F2FD"),
+            'CLEANING_PROCESS':     ("② 세척 동작 진행 중 🔄",      "#E65100", "#FFF3E0"),
+            'CLEANING_RETURN_HOME': ("③ 홈 복귀 중 ↑",             "#6A1B9A", "#F3E5F5"),
+        }
+        is_cleaning = state.startswith('CLEANING')
+        if is_cleaning:
+            adv.cleaning_start_btn.setEnabled(False)
+            step_text, step_color, step_bg = cleaning_step_map.get(
+                state, (f"세척 중 ({state})", "#E65100", "#FFF3E0")
+            )
+            adv.set_cleaning_status(step_text, color=step_color, bg=step_bg)
+        else:
+            # 세척 상태가 아닐 때만 버튼 활성화 & 라벨 복원
+            # (타이머 진행 중인 경우는 cleaning_start_btn 이 비활성이므로 구분 가능)
+            adv.cleaning_start_btn.setEnabled(True)
+            current_label = adv.cleaning_status_label.text()
+            non_idle_labels = {"대기 중", "✅ 세척 완료"}
+            if current_label not in non_idle_labels and not is_cleaning:
+                adv.set_cleaning_status("대기 중")
+
         # 센서 상태
         sensor_map = {
-            'photo': status_data.get('photo', False),
-            'dc_top': status_data.get('dc_top', False),
-            'dc_bottom': status_data.get('dc_bottom', False),
-            'stp_top': status_data.get('stp_top', False),
+            'photo':      status_data.get('photo', False),
+            'dc_top':     status_data.get('dc_top', False),
+            'dc_bottom':  status_data.get('dc_bottom', False),
+            'stp_top':    status_data.get('stp_top', False),
             'stp_bottom': status_data.get('stp_bottom', False)
         }
         
@@ -663,7 +938,6 @@ class ArduinoControllerGUI(QMainWindow):
     
     def add_log(self, message):
         """로그 추가"""
-        # 관리자 화면의 로그에만 추가
         if hasattr(self.advanced_screen, 'log_text'):
             timestamp = datetime.now().strftime("%H:%M:%S")
             self.advanced_screen.log_text.append(f"[{timestamp}] {message}")
